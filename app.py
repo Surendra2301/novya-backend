@@ -1,20 +1,12 @@
-
-
-
-
-
-
-
-
-
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 import os, json, re, random
 import logging
 from openai import OpenAI
+from typing import Dict, List, Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +30,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Pydantic Models
+class ChatRequest(BaseModel):
+    class_level: str
+    subject: str
+    chapter: str
+    student_question: str
+    chat_history: Optional[List[Dict]] = None
+
+class StudyPlanRequest(BaseModel):
+    class_level: str
+    subject: str
+    chapter: str
+    days_available: int = 7
+    hours_per_day: int = 2
+
+class NotesRequest(BaseModel):
+    class_level: str
+    subject: str
+    chapter: str
+    specific_topic: Optional[str] = None
 # Corrected CBSE 7th–10th Computers & English units & topics (for quickpractice)
 CHAPTERS_DETAILED = {
     "7th": {
@@ -1262,14 +1274,21 @@ CHAPTERS_SIMPLE = {
         ]
     }
 }
-
-# Limit previous questions to prevent prompt size issues
 MAX_PREVIOUS_QUESTIONS = 100
 PREVIOUS_QUESTIONS_QUICK = {}
 PREVIOUS_QUESTIONS_MOCK = {}
 
-#Qucikpractice
+# Language instruction mapping
+LANGUAGE_INSTRUCTIONS = {
+    "English": "Generate all questions and options in English.",
+    "Telugu": "Generate all questions and options in Telugu language (తెలుగు). Use Telugu script.",
+    "Hindi": "Generate all questions and options in Hindi language (हिंदी). Use Devanagari script.",
+    "Tamil": "Generate all questions and options in Tamil language (தமிழ்). Use Tamil script.",
+    "Kannada": "Generate all questions and options in Kannada language (ಕನ್ನಡ). Use Kannada script.",
+    "Malayalam": "Generate all questions and options in Malayalam language (മലയാളം). Use Malayalam script."
+}
 
+# Quick Practice Endpoints
 @app.get("/classes")
 def get_classes():
     logger.info("Fetching available classes")
@@ -1294,33 +1313,13 @@ def get_subtopics(class_name: str, subject: str):
     subtopics = subjects[subject]
     return JSONResponse(content={"subtopics": subtopics})
 
-# @app.get("/quiz")
-# def get_quiz(subtopic: str, retry: bool = False):
-#     try:
-#         previous = PREVIOUS_QUESTIONS_QUICK.get(subtopic, []) if not retry else []
-#         # --- AUTOMATIC DIFFICULTY PROGRESSION ---
-       
-#         num_prev = len(previous)
-#         if num_prev == 0:
-#             #  difficulty = "simple"
-#              current_level = 1
-
-#         elif num_prev == 1:
-#             # difficulty = "medium"
-#             current_level = 2
-#         elif num_prev == 2:
-#             current_level = 3    
-#         else:
-#             # difficulty = "hard"
-#             current_level = 3
-#         difficulty_map = {1: "simple", 2: "medium", 3: "hard"}
-#         difficulty = difficulty_map.get(current_level, "simple")
-#         logger.info(f"Generating quiz for subtopic: {subtopic}, difficulty: {difficulty}, retry: {retry}")
-   
-# In your app.py, modify the /quiz endpoint:
-
 @app.get("/quiz")
-def get_quiz(subtopic: str, retry: bool = False, currentLevel: int = None):
+def get_quiz(
+    subtopic: str,
+    retry: bool = False,
+    currentLevel: int = None,
+    language: str = "English"
+):
     try:
         previous = PREVIOUS_QUESTIONS_QUICK.get(subtopic, []) if not retry else []
 
@@ -1340,24 +1339,33 @@ def get_quiz(subtopic: str, retry: bool = False, currentLevel: int = None):
         difficulty_map = {1: "simple", 2: "medium", 3: "hard"}
         difficulty = difficulty_map.get(current_level, "simple")
 
-        logger.info(f"Generating quiz for subtopic: {subtopic}, difficulty: {difficulty}, retry: {retry}, level: {current_level}")
+        logger.info(f"Generating quiz for subtopic: {subtopic}, difficulty: {difficulty}, retry: {retry}, level: {current_level}, language: {language}")
        
+        # Get language instruction
+        language_instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["English"])
+
         prompt = f"""
         Generate 10 multiple-choice questions for "{subtopic}".
         Difficulty: {difficulty}.
-        Avoid repeating these questions: {previous}.
+        {language_instruction}
+       
+        IMPORTANT INSTRUCTIONS:
+        - ALL questions, options, and content MUST be in {language} language only.
+        - Do NOT mix English with the target language.
+        - Use proper script for the selected language.
+        - Avoid repeating these questions: {previous}.
        
         IMPORTANT FORMAT REQUIREMENTS:
         - Each question should have exactly 4 options as an array: ["option1", "option2", "option3", "option4"]
         - The answer should be the actual text of the correct option, NOT a letter
         - Return ONLY a JSON array with keys: question, options (array), answer (actual option text)
        
-        Example format:
+        Example format (in {language}):
         [
           {{
-            "question": "What is 2 + 2?",
-            "options": ["3", "4", "5", "6"],
-            "answer": "4"
+            "question": "[Question text in {language}]",
+            "options": ["[Option 1 in {language}]", "[Option 2 in {language}]", "[Option 3 in {language}]", "[Option 4 in {language}]"],
+            "answer": "[Correct option text in {language}]"
           }}
         ]
         """
@@ -1377,12 +1385,21 @@ def get_quiz(subtopic: str, retry: bool = False, currentLevel: int = None):
         else:
             text = str(message_content)
 
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if not match:
-            logger.error(f"AI did not return valid JSON: {text[:200]}")
-            raise ValueError(f"AI did not return valid JSON: {text[:200]}")
+        # Clean up markdown code blocks if present
+        text = text.strip()
+        if text.startswith("```json"):
+            text = text[7:].strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
 
-        quiz_json = json.loads(match.group(0))
+        try:
+            quiz_json = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r'\[.*\]', text, re.DOTALL)
+            if not match:
+                logger.error(f"AI did not return valid JSON: {text[:200]}")
+                raise ValueError(f"AI did not return valid JSON: {text[:200]}")
+            quiz_json = json.loads(match.group(0))
 
         # Process and validate the quiz
         processed_quiz = []
@@ -1419,7 +1436,7 @@ def get_quiz(subtopic: str, retry: bool = False, currentLevel: int = None):
         if not retry:
             PREVIOUS_QUESTIONS_QUICK[subtopic] = previous + [q["question"] for q in processed_quiz]
 
-        logger.info(f"Generated {len(processed_quiz)} questions for subtopic: {subtopic}")
+        logger.info(f"Generated {len(processed_quiz)} questions for subtopic: {subtopic} in {language}")
        
         return JSONResponse(content={
             "currentLevel": current_level,
@@ -1430,8 +1447,298 @@ def get_quiz(subtopic: str, retry: bool = False, currentLevel: int = None):
         logger.error(f"Error generating quiz: {str(e)}")
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-# ==================== MOCKTEST ENDPOINTS ====================
+# AI Assistant Endpoints
+def _classify_question_type(question: str) -> str:
+    """Classify the type of question for better response handling"""
+    question_lower = question.lower()
+   
+    if any(word in question_lower for word in ['study plan', 'schedule', 'timetable', 'how to study', 'plan']):
+        return "study_plan"
+    elif any(word in question_lower for word in ['notes', 'summary', 'key points', 'important points', 'write down']):
+        return "notes"
+    elif any(word in question_lower for word in ['explain', 'what is', 'how does', 'why', 'meaning', 'define']):
+        return "explanation"
+    elif any(word in question_lower for word in ['practice', 'exercise', 'question', 'problem', 'solve', 'worksheet']):
+        return "practice"
+    elif any(word in question_lower for word in ['related', 'connect', 'application', 'real world', 'where used']):
+        return "related_concepts"
+    elif any(word in question_lower for word in ['example', 'examples', 'sample']):
+        return "examples"
+    else:
+        return "general"
 
+# AI Assistant Endpoints
+@app.post("/ai-assistant/chat")
+async def ai_assistant_chat(request: ChatRequest):
+    try:
+        class_level = request.class_level
+        subject = request.subject
+        chapter = request.chapter
+        student_question = request.student_question
+        chat_history = request.chat_history or []
+       
+        # Get language preference
+        language = "English"
+       
+        # Enhanced prompt with better formatting instructions
+        prompt = f"""
+        You are an AI Learning Assistant for a {class_level} student studying {subject}, specifically chapter: {chapter}.
+       
+        Student's Question: "{student_question}"
+       
+        Previous conversation context: {chat_history[-5:] if chat_history else "No previous context"}
+       
+        Based on the student's question, provide a helpful, educational response with EXCELLENT STRUCTURE and CHILD-FRIENDLY formatting.
+       
+        **CRITICAL FORMATTING RULES:**
+        1. Use CLEAR HEADINGS with emojis
+        2. Use BULLET POINTS and NUMBERED LISTS
+        3. Use SIMPLE LANGUAGE for children
+        4. Add VISUAL SEPARATORS like lines between sections
+        5. Use LARGE FONT indicators for important points
+        6. Include PRACTICAL EXAMPLES
+        7. Add SUMMARY TABLES where helpful
+        8. Use COLOR INDICATORS (🔴 🟢 🔵 🟡)
+       
+        **RESPONSE TYPES:**
+       
+        1. STUDY PLAN Response Structure:
+           🗓️ WEEKLY STUDY PLAN
+           ───────────────────
+           📅 Day 1: [Topic]
+           • Time: [Duration]
+           • Activities: [List]
+           • Practice: [Specific tasks]
+           ───────────────────
+           
+        2. NOTES Response Structure:
+           📚 CHAPTER NOTES
+           ───────────────
+           🔹 Key Concept 1
+           • Definition: [Simple definition]
+           • Example: [Real-world example]
+           • Remember: [Important point]
+           ───────────────
+           
+        3. EXPLANATION Response Structure:
+           💡 CONCEPT EXPLANATION
+           ────────────────────
+           🎯 What is it?
+           [Simple definition]
+           
+           👀 How it works:
+           [Step-by-step]
+           
+           🌍 Real Example:
+           [Child-friendly example]
+           ────────────────────
+           
+        4. PRACTICE QUESTIONS Structure:
+           📝 PRACTICE TIME
+           ───────────────
+           🟢 EASY Question:
+           [Question]
+           
+           🟡 MEDIUM Question:
+           [Question]
+           
+           🔴 CHALLENGE Question:
+           [Question]
+           
+           ✅ SOLUTIONS:
+           [Step-by-step solutions]
+           ───────────────
+       
+        Make it VISUALLY APPEALING and EASY TO READ for a child!
+        """
+       
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+       
+        message_content = response.choices[0].message.content
+        text = ""
+        if isinstance(message_content, list):
+            for block in message_content:
+                if block.get("type") == "text":
+                    text += block.get("text", "")
+        else:
+            text = str(message_content)
+       
+        return JSONResponse(content={
+            "success": True,
+            "response": text,
+            "type": _classify_question_type(student_question)
+        })
+       
+    except Exception as e:
+        logger.error(f"Error in AI assistant: {str(e)}")
+        return JSONResponse(content={
+            "success": False,
+            "response": "I apologize, but I'm having trouble processing your request right now. Please try again.",
+            "type": "error"
+        }, status_code=500)
+
+@app.post("/ai-assistant/generate-study-plan")
+async def generate_study_plan(request: StudyPlanRequest):
+    """Generate a detailed study plan for a specific chapter"""
+    try:
+        class_level = request.class_level
+        subject = request.subject
+        chapter = request.chapter
+        days_available = request.days_available
+        hours_per_day = request.hours_per_day
+       
+        prompt = f"""
+        Create a SUPER STRUCTURED and CHILD-FRIENDLY {days_available}-day study plan for a {class_level} student studying {subject}, chapter: {chapter}.
+       
+        **FORMATTING REQUIREMENTS:**
+       
+        🗓️ {days_available}-DAY STUDY PLAN FOR {chapter.upper()}
+        ═══════════════════════════════════════
+       
+        📊 QUICK OVERVIEW:
+        • Total Days: {days_available}
+        • Daily Study: {hours_per_day} hours
+        • Subject: {subject}
+        • Chapter: {chapter}
+       
+        📅 DAILY BREAKDOWN:
+        ───────────────────
+       
+        DAY 1: [Main Topic]
+        🕐 Time: [Specific time allocation]
+        📚 What to Study:
+        • Topic 1: [Details]
+        • Topic 2: [Details]
+        ✍️ Practice:
+        • [Specific practice tasks]
+        ✅ Check: [Self-check points]
+       
+        DAY 2: [Main Topic]
+        🕐 Time: [Specific time allocation]
+        📚 What to Study:
+        • Topic 1: [Details]
+        • Topic 2: [Details]
+        ✍️ Practice:
+        • [Specific practice tasks]
+        ✅ Check: [Self-check points]
+       
+        🎯 WEEKLY GOALS:
+        • Goal 1: [Specific achievement]
+        • Goal 2: [Specific achievement]
+       
+        💡 STUDY TIPS:
+        • Tip 1: [Practical tip]
+        • Tip 2: [Practical tip]
+       
+        Make it COLORFUL and EASY TO FOLLOW for a child!
+        Use EMOJIS and CLEAR SECTIONS!
+        """
+       
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+       
+        message_content = response.choices[0].message.content
+        text = str(message_content) if not isinstance(message_content, list) else message_content[0].get("text", "")
+       
+        return JSONResponse(content={
+            "success": True,
+            "study_plan": text
+        })
+       
+    except Exception as e:
+        logger.error(f"Error generating study plan: {str(e)}")
+        return JSONResponse(content={
+            "success": False,
+            "study_plan": "Unable to generate study plan at this time."
+        }, status_code=500)
+
+@app.post("/ai-assistant/generate-notes")
+async def generate_notes(request: NotesRequest):
+    """Generate comprehensive notes for a chapter or specific topic"""
+    try:
+        class_level = request.class_level
+        subject = request.subject
+        chapter = request.chapter
+        specific_topic = request.specific_topic
+       
+        topic_specific = f" on {specific_topic}" if specific_topic else ""
+       
+        prompt = f"""
+        Generate SUPER ORGANIZED and CHILD-FRIENDLY study notes for a {class_level} student studying {subject}, chapter: {chapter}{topic_specific}.
+       
+        **REQUIRED FORMAT:**
+       
+        📚 {chapter.upper()} - STUDY NOTES
+        ═══════════════════════════
+       
+        🎯 CHAPTER AT A GLANCE:
+        • Main Topics: [List 3-4 main topics]
+        • Key Skills: [What they'll learn]
+        • Difficulty: 🟢 Easy / 🟡 Medium / 🔴 Hard
+       
+        🔍 KEY CONCEPTS:
+        ─────────────────
+       
+        🔹 Concept 1: [Concept Name]
+        • What it is: [Simple definition]
+        • Example: 🌟 [Real example]
+        • Remember: 💡 [Key point]
+        • Formula: 📐 [If applicable]
+       
+        🔹 Concept 2: [Concept Name]
+        • What it is: [Simple definition]
+        • Example: 🌟 [Real example]
+        • Remember: 💡 [Key point]
+        • Formula: 📐 [If applicable]
+       
+        📋 IMPORTANT POINTS TABLE:
+        ─────────────────────────
+        | Point | Description | Remember |
+        |-------|-------------|----------|
+        | [1] | [Description] | [Memory tip] |
+        | [2] | [Description] | [Memory tip] |
+       
+        💪 PRACTICE READY:
+        • Quick Questions: [2-3 simple questions]
+        • Think About: [1 critical thinking question]
+       
+        📝 SUMMARY:
+        • Main Idea 1: [Summary point]
+        • Main Idea 2: [Summary point]
+        • Main Idea 3: [Summary point]
+       
+        Use LOTS OF EMOJIS, CLEAR SECTIONS, and CHILD-FRIENDLY LANGUAGE!
+        Make it VISUALLY APPEALING!
+        """
+       
+        response = client.chat.completions.create(
+            model="google/gemini-2.0-flash-001",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+       
+        message_content = response.choices[0].message.content
+        text = str(message_content) if not isinstance(message_content, list) else message_content[0].get("text", "")
+       
+        return JSONResponse(content={
+            "success": True,
+            "notes": text
+        })
+       
+    except Exception as e:
+        logger.error(f"Error generating notes: {str(e)}")
+        return JSONResponse(content={
+            "success": False,
+            "notes": "Unable to generate notes at this time."
+        }, status_code=500)
+# Mock Test Endpoints
 @app.get("/mock_classes")
 def get_mock_classes():
     logger.info("Fetching available classes for mock test")
@@ -1459,11 +1766,17 @@ def get_mock_chapters(class_name: str, subject: str):
     return JSONResponse(content={"chapters": chapters})
 
 @app.get("/mock_test")
-def get_mock_test(class_name: str, subject: str, chapter: str, retry: bool = False):
+def get_mock_test(
+    class_name: str,
+    subject: str,
+    chapter: str,
+    retry: bool = False,
+    language: str = "English"
+):
     try:
         previous = PREVIOUS_QUESTIONS_MOCK.get(chapter, []) if not retry else []
 
-        # --- AUTOMATIC DIFFICULTY PROGRESSION ---
+        # Automatic difficulty progression
         num_prev = len(previous)
         if num_prev == 0:
             current_level = 1
@@ -1475,7 +1788,7 @@ def get_mock_test(class_name: str, subject: str, chapter: str, retry: bool = Fal
             current_level = 3
             difficulty = "hard"
        
-        logger.info(f"Generating mock test for class: {class_name}, subject: {subject}, chapter: {chapter}, difficulty: {difficulty}, retry: {retry}")
+        logger.info(f"Generating mock test for class: {class_name}, subject: {subject}, chapter: {chapter}, difficulty: {difficulty}, language: {language}, retry: {retry}")
 
         subjects = CHAPTERS_SIMPLE.get(class_name)
         if not subjects or subject not in subjects:
@@ -1498,17 +1811,41 @@ def get_mock_test(class_name: str, subject: str, chapter: str, retry: bool = Fal
             previous = previous[-MAX_PREVIOUS_QUESTIONS:]
             logger.info(f"Truncated previous questions for chapter: {chapter} to {MAX_PREVIOUS_QUESTIONS}")
 
-        # --- Rest of your existing prompt, AI call, parsing, shuffling code remains unchanged ---
+        # Get language instruction
+        language_instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["English"])
+
         prompt = f"""
         Generate 50 multiple-choice questions for "{chapter}" in {subject} for class {class_name}.
         Difficulty: {difficulty}.
-        Avoid repeating these questions: {previous}.
-        Each question must have 4 options as a JSON object {{"A": "option text", "B": "another option", "C": "third option", "D": "fourth option"}}.
-        The answer must be the label "A", "B", "C", or "D".
-        Return ONLY a JSON array of objects with keys: question, options, answer.
+        {language_instruction}
+       
+        IMPORTANT INSTRUCTIONS:
+        - ALL questions, options, and content MUST be in {language} language only.
+        - Do NOT mix English with the target language.
+        - Use proper script for the selected language.
+        - Avoid repeating these questions: {previous}.
+       
+        FORMAT REQUIREMENTS:
+        - Each question must have exactly 4 options as a JSON object {{"A": "option text", "B": "another option", "C": "third option", "D": "fourth option"}}.
+        - The answer must be the label "A", "B", "C", or "D".
+        - Return ONLY a JSON array of objects with keys: question, options, answer.
+       
+        Example format (in {language}):
+        [
+          {{
+            "question": "[Question text in {language}]",
+            "options": {{
+              "A": "[Option A in {language}]",
+              "B": "[Option B in {language}]",
+              "C": "[Option C in {language}]",
+              "D": "[Option D in {language}]"
+            }},
+            "answer": "C"
+          }}
+        ]
         """
 
-        logger.info(f"Sending prompt to AI for chapter: {chapter}")
+        logger.info(f"Sending prompt to AI for chapter: {chapter} in {language}")
         response = client.chat.completions.create(
             model="google/gemini-2.0-flash-001",
             messages=[{"role": "user", "content": prompt}],
@@ -1535,11 +1872,11 @@ def get_mock_test(class_name: str, subject: str, chapter: str, retry: bool = Fal
         except json.JSONDecodeError:
             match = re.search(r'\[.*\]', text, re.DOTALL)
             if not match:
-                return JSONResponse(content=[], status_code=200)
+                return JSONResponse(content={"currentLevel": current_level, "quiz": []}, status_code=200)
             quiz_json = json.loads(match.group(0))
 
         if not isinstance(quiz_json, list):
-            return JSONResponse(content=[], status_code=200)
+            return JSONResponse(content={"currentLevel": current_level, "quiz": []}, status_code=200)
 
         processed_quiz = []
         for q in quiz_json:
@@ -1565,23 +1902,33 @@ def get_mock_test(class_name: str, subject: str, chapter: str, retry: bool = Fal
             q["answer"] = new_answer
             processed_quiz.append(q)
 
+        while len(processed_quiz) < 50:
+            processed_quiz.append({
+                "id": len(processed_quiz),
+                "question": f"Placeholder Question {len(processed_quiz) + 1}",
+                "options": {"A": "Option A", "B": "Option B", "C": "Option C", "D": "Option D"},
+                "answer": "A"
+            })
+
         if not retry:
             PREVIOUS_QUESTIONS_MOCK[chapter] = previous + [q["question"] for q in processed_quiz]
             if len(PREVIOUS_QUESTIONS_MOCK[chapter]) > MAX_PREVIOUS_QUESTIONS:
                 PREVIOUS_QUESTIONS_MOCK[chapter] = PREVIOUS_QUESTIONS_MOCK[chapter][-MAX_PREVIOUS_QUESTIONS:]
 
-        # return JSONResponse(content=processed_quiz)
         return JSONResponse(content={
-    "currentLevel": current_level,
-    "quiz": processed_quiz
-})
-
+            "currentLevel": current_level,
+            "quiz": processed_quiz
+        })
 
     except HTTPException as e:
         raise
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
-        return JSONResponse(content=[], status_code=200)
+        return JSONResponse(content={"currentLevel": 1, "quiz": []}, status_code=200)
+
+@app.get("/")
+def read_root():
+    return {"message": "AI Learning Assistant API is running"}
 
 if __name__ == "__main__":
     import uvicorn
