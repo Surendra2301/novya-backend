@@ -5759,7 +5759,8 @@ def get_mock_test(
         - Do NOT mix English with the target language.
         - Use proper script for the selected language.
         - Avoid repeating these questions: {previous}.
-       
+        - If you cannot generate all 50 unique questions, repeat some of the previous ones with slight modifications in wording, structure, or numerical values instead of adding placeholder questions.
+        
         FORMAT REQUIREMENTS:
         - Each question must have exactly 4 options as a JSON object {{"A": "option text", "B": "another option", "C": "third option", "D": "fourth option"}}.
         - The answer must be the label "A", "B", "C", or "D".
