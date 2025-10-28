@@ -6068,137 +6068,483 @@ def translate_explanation(explanation: str, language: str) -> str:
         logger.error(f"Translation error: {str(e)}")
         return explanation  # Fallback to original
 
-def generate_single_explanation(question_data, context, language: str = "English"):
-    """Generate explanation for a single question synchronously, with translation support"""
+# def generate_single_explanation(question_data, context, language: str = "English"):
+#     """Generate explanation for a single question synchronously, with translation support"""
+#     question = question_data.get("question", "")
+#     correct_answer = question_data.get("correct_answer", "")
+#     user_answer = question_data.get("user_answer", "")
+#     options = question_data.get("options", [])
+#     i = question_data.get("index", 0)  # Add index to question_data
+   
+#     prompt = f"""
+#     {context}
+   
+#     Generate a concise 3-4 line explanation ONLY for why the correct answer is right for this question. Keep it directly related to the question's content and chapter concepts. Do NOT explain wrong answers or include any other details.
+   
+#     QUESTION: {question}
+   
+#     OPTIONS:
+#     {chr(65)}. {options[0] if len(options) > 0 else 'N/A'}
+#     {chr(66)}. {options[1] if len(options) > 1 else 'N/A'}
+#     {chr(67)}. {options[2] if len(options) > 2 else 'N/A'}
+#     {chr(68)}. {options[3] if len(options) > 3 else 'N/A'}
+   
+#     CORRECT ANSWER: {correct_answer}
+   
+#     Provide ONLY a 3-4 line explanation focused on the correct answer, using simple language for students.
+#     """
+   
+#     try:
+#         response = client.chat.completions.create(
+#             model="google/gemini-2.0-flash-001",
+#             messages=[{"role": "user", "content": prompt}],
+#             temperature=0.7,
+#             max_tokens=100  # Reduced for faster response
+#         )
+       
+#         message_content = response.choices[0].message.content
+#         explanation = str(message_content) if not isinstance(message_content, list) else message_content[0].get("text", "")
+       
+#         # Translate if needed
+#         explanation = translate_explanation(explanation, language)
+       
+#         return {
+#             "question_index": i,
+#             "question": question,
+#             "correct_answer": correct_answer,
+#             "user_answer": user_answer,
+#             "explanation": explanation,
+#             "is_correct": user_answer == correct_answer
+#         }
+#     except Exception as e:
+#         logger.error(f"Error generating explanation for question {i}: {str(e)}")
+#         fallback_explanation = "The correct answer aligns with the key concept in this chapter; review the main ideas to understand why."
+#         fallback_explanation = translate_explanation(fallback_explanation, language)
+#         return {
+#             "question_index": i,
+#             "question": question,
+#             "correct_answer": correct_answer,
+#             "user_answer": user_answer,
+#             "explanation": fallback_explanation,
+#             "is_correct": user_answer == correct_answer
+#         }
+
+
+
+def generate_single_explanation(question_data, context):
+
+    """Generate explanation for a single question synchronously IN ENGLISH ONLY"""
+
     question = question_data.get("question", "")
+
     correct_answer = question_data.get("correct_answer", "")
+
     user_answer = question_data.get("user_answer", "")
+
     options = question_data.get("options", [])
-    i = question_data.get("index", 0)  # Add index to question_data
-   
+
+    i = question_data.get("index", 0)
+
+    # 🔴 ENHANCED PROMPT TO FORCE ENGLISH EXPLANATIONS
+
     prompt = f"""
+
     {context}
-   
-    Generate a concise 3-4 line explanation ONLY for why the correct answer is right for this question. Keep it directly related to the question's content and chapter concepts. Do NOT explain wrong answers or include any other details.
-   
+
+    IMPORTANT: You MUST provide the explanation in ENGLISH language only. Do not translate the question or answers.
+
+    Generate a concise 3-4 line explanation ONLY for why the correct answer is right for this question. 
+
+    Keep it directly related to the question's content and chapter concepts. 
+
+    Do NOT explain wrong answers or include any other details.
+
     QUESTION: {question}
-   
+
     OPTIONS:
+
     {chr(65)}. {options[0] if len(options) > 0 else 'N/A'}
+
     {chr(66)}. {options[1] if len(options) > 1 else 'N/A'}
+
     {chr(67)}. {options[2] if len(options) > 2 else 'N/A'}
+
     {chr(68)}. {options[3] if len(options) > 3 else 'N/A'}
-   
+
     CORRECT ANSWER: {correct_answer}
-   
-    Provide ONLY a 3-4 line explanation focused on the correct answer, using simple language for students.
+
+    Provide ONLY a 3-4 line explanation in ENGLISH focused on the correct answer, using simple language for students.
+
+    EXPLANATION (ENGLISH ONLY):
+
     """
-   
+
     try:
+
         response = client.chat.completions.create(
+
             model="google/gemini-2.0-flash-001",
+
             messages=[{"role": "user", "content": prompt}],
+
             temperature=0.7,
+
             max_tokens=100  # Reduced for faster response
+
         )
-       
+
         message_content = response.choices[0].message.content
+
         explanation = str(message_content) if not isinstance(message_content, list) else message_content[0].get("text", "")
-       
-        # Translate if needed
-        explanation = translate_explanation(explanation, language)
-       
+
+        # 🔴 VALIDATE AND ENFORCE ENGLISH
+
+        explanation = ensure_english_explanation(explanation, correct_answer)
+
+        logger.info(f"✅ Generated ENGLISH explanation for question {i + 1}")
+
         return {
+
             "question_index": i,
+
             "question": question,
+
             "correct_answer": correct_answer,
+
             "user_answer": user_answer,
+
             "explanation": explanation,
+
             "is_correct": user_answer == correct_answer
-        }
-    except Exception as e:
-        logger.error(f"Error generating explanation for question {i}: {str(e)}")
-        fallback_explanation = "The correct answer aligns with the key concept in this chapter; review the main ideas to understand why."
-        fallback_explanation = translate_explanation(fallback_explanation, language)
-        return {
-            "question_index": i,
-            "question": question,
-            "correct_answer": correct_answer,
-            "user_answer": user_answer,
-            "explanation": fallback_explanation,
-            "is_correct": user_answer == correct_answer
+
         }
 
-@app.post("/generate-explanations")
-async def generate_explanations(request: ExplanationRequest):
-    """Generate detailed explanations for quiz/mock test questions"""
-    try:
-        questions = request.questions
-        class_level = request.class_level
-        subject = request.subject
-        chapter = request.chapter
-        language = request.language or "English"
-       
-        # Build context string
-        context = ""
-        if class_level and subject and chapter:
-            context = f"This question is from {class_level} grade {subject} - Chapter: {chapter}. Focus the explanation on key concepts from this chapter."
-       
-        logger.info(f"Generating explanations for {len(questions)} questions with context: {context}, language: {language}")
-       
-        # Prepare question data with index
-        question_data_list = []
-        for i, q in enumerate(questions):
-            q_copy = q.copy()
-            q_copy["index"] = i
-            question_data_list.append(q_copy)
-       
-        explanations = []
-       
-        # Use ThreadPoolExecutor for parallel execution
-        max_workers = min(10, len(question_data_list))  # Limit workers to avoid overwhelming the API
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            future_to_index = {
-                executor.submit(generate_single_explanation, qd, context, language): qd["index"]
-                for qd in question_data_list
-            }
-           
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(future_to_index):
-                try:
-                    result = future.result()
-                    explanations.append(result)
-                except Exception as exc:
-                    index = future_to_index[future]
-                    logger.error(f"Explanation for question {index} generated an exception: {exc}")
-                    # Add fallback
-                    q = questions[index]
-                    fallback_explanation = "Unable to generate explanation at this time. Please review the question and try to understand the concept."
-                    fallback_explanation = translate_explanation(fallback_explanation, language)
-                    explanations.append({
-                        "question_index": index,
-                        "question": q.get("question", ""),
-                        "correct_answer": q.get("correct_answer", ""),
-                        "user_answer": q.get("user_answer", ""),
-                        "explanation": fallback_explanation,
-                        "is_correct": q.get("user_answer", "") == q.get("correct_answer", "")
-                    })
-       
-        # Sort explanations by question_index to maintain order
-        explanations.sort(key=lambda x: x["question_index"])
-       
-        return JSONResponse(content={
-            "success": True,
-            "explanations": explanations
-        })
-       
     except Exception as e:
-        logger.error(f"Error in generate_explanations: {str(e)}")
+
+        logger.error(f"Error generating explanation for question {i}: {str(e)}")
+
+        # 🔴 ENGLISH FALLBACK
+
+        return {
+
+            "question_index": i,
+
+            "question": question,
+
+            "correct_answer": correct_answer,
+
+            "user_answer": user_answer,
+
+            "explanation": f"The correct answer '{correct_answer}' is right because it aligns with the fundamental concepts from this chapter that students need to understand.",  # ENGLISH
+
+            "is_correct": user_answer == correct_answer
+
+        }
+ 
+# 🔴 NEW FUNCTION TO ENSURE ENGLISH EXPLANATIONS
+
+def ensure_english_explanation(explanation, correct_answer):
+
+    """Ensure the explanation is in English, provide fallback if not"""
+
+    if not explanation or explanation.strip() == "":
+
+        return f"The correct answer '{correct_answer}' demonstrates proper understanding of the key concepts being tested in this question."
+
+    # Check for non-English characters
+
+    if has_non_english_characters(explanation):
+
+        logger.warning("Non-English characters detected in explanation, using English fallback")
+
+        return f"The correct answer '{correct_answer}' is accurate because it reflects the core principles and learning objectives covered in this chapter."
+
+    # Ensure explanation is meaningful (not just "correct answer is X")
+
+    if len(explanation.strip()) < 20 or "correct answer is" in explanation.lower() and len(explanation) < 50:
+
+        return f"The correct answer '{correct_answer}' is right because it applies the main concepts from this chapter that are essential for academic success."
+
+    return explanation.strip()
+ 
+# 🔴 FUNCTION TO DETECT NON-ENGLISH CHARACTERS
+
+def has_non_english_characters(text):
+
+    """Detect if text contains non-English characters"""
+
+    if not text:
+
+        return False
+
+    # Common non-English Unicode ranges
+
+    non_english_ranges = [
+
+        (0x0900, 0x097F),  # Devanagari (Hindi, Sanskrit)
+
+       
+
+        (0x0B80, 0x0BFF),  # Tamil
+
+        (0x0C00, 0x0C7F),  # Telugu
+
+        (0x0C80, 0x0CFF),  # Kannada
+
+        (0x0D00, 0x0D7F),  # Malayalam
+
+                (0x0B80, 0x0BFF),  # Tamil
+    ]
+
+    for char in text:
+
+        code_point = ord(char)
+
+        # Check if character is outside basic ASCII and in non-English ranges
+
+        if code_point > 127:
+
+            for start, end in non_english_ranges:
+
+                if start <= code_point <= end:
+
+                    return True
+
+    return False
+ 
+
+
+
+
+
+# @app.post("/generate-explanations")
+# async def generate_explanations(request: ExplanationRequest):
+#     """Generate detailed explanations for quiz/mock test questions"""
+#     try:
+#         questions = request.questions
+#         class_level = request.class_level
+#         subject = request.subject
+#         chapter = request.chapter
+#         language = request.language or "English"
+       
+#         # Build context string
+#         context = ""
+#         if class_level and subject and chapter:
+#             context = f"This question is from {class_level} grade {subject} - Chapter: {chapter}. Focus the explanation on key concepts from this chapter."
+       
+#         logger.info(f"Generating explanations for {len(questions)} questions with context: {context}, language: {language}")
+       
+#         # Prepare question data with index
+#         question_data_list = []
+#         for i, q in enumerate(questions):
+#             q_copy = q.copy()
+#             q_copy["index"] = i
+#             question_data_list.append(q_copy)
+       
+#         explanations = []
+       
+#         # Use ThreadPoolExecutor for parallel execution
+#         max_workers = min(10, len(question_data_list))  # Limit workers to avoid overwhelming the API
+#         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+#             # Submit all tasks
+#             future_to_index = {
+#                 executor.submit(generate_single_explanation, qd, context, language): qd["index"]
+#                 for qd in question_data_list
+#             }
+           
+#             # Collect results as they complete
+#             for future in concurrent.futures.as_completed(future_to_index):
+#                 try:
+#                     result = future.result()
+#                     explanations.append(result)
+#                 except Exception as exc:
+#                     index = future_to_index[future]
+#                     logger.error(f"Explanation for question {index} generated an exception: {exc}")
+#                     # Add fallback
+#                     q = questions[index]
+#                     fallback_explanation = "Unable to generate explanation at this time. Please review the question and try to understand the concept."
+#                     fallback_explanation = translate_explanation(fallback_explanation, language)
+#                     explanations.append({
+#                         "question_index": index,
+#                         "question": q.get("question", ""),
+#                         "correct_answer": q.get("correct_answer", ""),
+#                         "user_answer": q.get("user_answer", ""),
+#                         "explanation": fallback_explanation,
+#                         "is_correct": q.get("user_answer", "") == q.get("correct_answer", "")
+#                     })
+       
+#         # Sort explanations by question_index to maintain order
+#         explanations.sort(key=lambda x: x["question_index"])
+       
+#         return JSONResponse(content={
+#             "success": True,
+#             "explanations": explanations
+#         })
+       
+#     except Exception as e:
+#         logger.error(f"Error in generate_explanations: {str(e)}")
+#         return JSONResponse(content={
+#             "success": False,
+#             "explanations": []
+#         }, status_code=500)
+
+
+
+
+
+@app.post("/generate-explanations")
+
+async def generate_explanations(request: ExplanationRequest):
+
+    """Generate detailed explanations for quiz/mock test questions IN ENGLISH ONLY"""
+
+    try:
+
+        questions = request.questions
+
+        class_level = request.class_level
+
+        subject = request.subject
+
+        chapter = request.chapter
+
+        # 🔴 GET LANGUAGE PARAMETERS AND FORCE ENGLISH
+
+        language = getattr(request, 'language', 'en')
+
+        explanation_language = getattr(request, 'explanation_language', 'en')
+
+        # 🔴 FORCE ENGLISH EXPLANATIONS
+
+        logger.info(f"🔴 FORCING ENGLISH EXPLANATIONS - Requested: {language}, Using: English")
+
+        # Build context string WITH ENGLISH ENFORCEMENT
+
+        context = ""
+
+        if class_level and subject and chapter:
+
+            context = f"This question is from {class_level} grade {subject} - Chapter: {chapter}. Provide the explanation in ENGLISH language only. Focus on key concepts from this chapter and explain why the correct answer is right."
+
+        else:
+
+            context = "Provide the explanation in ENGLISH language only. Explain why the correct answer is right based on standard educational principles."
+
+        logger.info(f"Generating ENGLISH explanations for {len(questions)} questions")
+
+        # Prepare question data with index
+
+        question_data_list = []
+
+        for i, q in enumerate(questions):
+
+            q_copy = q.copy()
+
+            q_copy["index"] = i
+
+            question_data_list.append(q_copy)
+
+        explanations = []
+
+        # Use ThreadPoolExecutor for parallel execution
+
+        max_workers = min(10, len(question_data_list))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+            # Submit all tasks WITH ENGLISH CONTEXT
+
+            future_to_index = {
+
+                executor.submit(generate_single_explanation, qd, context): qd["index"]
+
+                for qd in question_data_list
+
+            }
+
+            # Collect results as they complete
+
+            for future in concurrent.futures.as_completed(future_to_index):
+
+                try:
+
+                    result = future.result()
+
+                    explanations.append(result)
+
+                except Exception as exc:
+
+                    index = future_to_index[future]
+
+                    logger.error(f"Explanation for question {index} generated an exception: {exc}")
+
+                    # Add ENGLISH fallback
+
+                    q = questions[index]
+
+                    explanations.append({
+
+                        "question_index": index,
+
+                        "question": q.get("question", ""),
+
+                        "correct_answer": q.get("correct_answer", ""),
+
+                        "user_answer": q.get("user_answer", ""),
+
+                        "explanation": f"The correct answer is '{q.get('correct_answer', '')}'. This question tests important concepts that are fundamental to understanding this topic. Review the chapter materials for better comprehension.",  # ENGLISH
+
+                        "is_correct": q.get("user_answer", "") == q.get("correct_answer", "")
+
+                    })
+
+        # Sort explanations by question_index to maintain order
+
+        explanations.sort(key=lambda x: x["question_index"])
+
+        # 🔴 LOG TO CONFIRM ENGLISH EXPLANATIONS
+
+        english_count = 0
+
+        for exp in explanations[:3]:  # Check first 3 explanations
+
+            sample = exp['explanation'][:100] + '...' if len(exp['explanation']) > 100 else exp['explanation']
+
+            logger.info(f"🔴 ENGLISH EXPLANATION SAMPLE {exp['question_index'] + 1}: {sample}")
+
+            if any(word in exp['explanation'].lower() for word in ['correct', 'answer', 'because', 'explanation']):
+
+                english_count += 1
+
         return JSONResponse(content={
+
+            "success": True,
+
+            "explanations": explanations,
+
+            "language_used": "en",  # 🔴 CONFIRM ENGLISH
+
+            "message": "All explanations generated in English"
+
+        })
+
+    except Exception as e:
+
+        logger.error(f"Error in generate_explanations: {str(e)}")
+
+        return JSONResponse(content={
+
             "success": False,
+
+            "error": str(e),
+
             "explanations": []
+
         }, status_code=500)
+ 
+
+
+
 # Mock Test Endpoints
 @app.get("/mock_classes")
 def get_mock_classes():
